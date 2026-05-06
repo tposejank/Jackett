@@ -269,11 +269,6 @@ namespace Jackett.Common.Utils.Clients
                 }
             }
 
-            if (webRequest.Headers != null && webRequest.Headers.TryGetValue("User-Agent", out var ua))
-            {
-                fsRequest["userAgent"] = ua;
-            }
-
             if (!string.IsNullOrEmpty(webRequest.Cookies))
             {
                 var cookieList = new JArray();
@@ -288,7 +283,6 @@ namespace Jackett.Common.Utils.Clients
             if (!string.IsNullOrEmpty(webRequest.Referer))
             {
                 // Note: Referer is not directly supported as a top-level param in FlareSolverr v2/v3
-                // but we keep it here for future compatibility or internal use if needed.
             }
 
             // Add Proxy if configured
@@ -309,18 +303,30 @@ namespace Jackett.Common.Utils.Clients
                 var contentString = solution["response"]?.ToString();
 
                 // If it's an API request returning JSON/XML, FlareSolverr (the browser) often wraps it in HTML tags like <pre>.
-                // We need to extract the raw content if it looks like it's wrapped.
+                // Since FlareSolverr doesn't return the original Content-Type header, we must guess and unwrap.
                 if (contentString != null && contentString.TrimStart().StartsWith("<"))
                 {
-                    // Check for <pre> tag which browsers use to wrap JSON
+                    // 1. Check for <pre> tag which browsers use to wrap JSON or raw text
                     var match = Regex.Match(contentString, @"<pre[^>]*>(.*)</pre>", RegexOptions.Singleline | RegexOptions.IgnoreCase);
                     if (match.Success)
                     {
                         contentString = WebUtility.HtmlDecode(match.Groups[1].Value).Trim();
                     }
+                    // 2. Check for XML declaration if it's an XML response wrapped in HTML
+                    else if (contentString.Contains("<?xml"))
+                    {
+                        var xmlMatch = Regex.Match(contentString, @"(<\?xml.*)", RegexOptions.Singleline | RegexOptions.IgnoreCase);
+                        if (xmlMatch.Success)
+                        {
+                            contentString = xmlMatch.Groups[1].Value;
+                            // Strip any trailing HTML garbage the browser might have added
+                            var lastTag = contentString.LastIndexOf(">");
+                            if (lastTag > -1) contentString = contentString.Substring(0, lastTag + 1);
+                        }
+                    }
                     else
                     {
-                        // Fallback: if it's just inside <body>
+                        // 3. Fallback: if it's just inside <body>
                         match = Regex.Match(contentString, @"<body[^>]*>(.*)</body>", RegexOptions.Singleline | RegexOptions.IgnoreCase);
                         if (match.Success)
                         {
@@ -341,14 +347,6 @@ namespace Jackett.Common.Utils.Clients
                     Request = webRequest
                 };
 
-                if (solution["headers"] != null)
-                {
-                    foreach (var header in (JObject)solution["headers"])
-                    {
-                        result.Headers[header.Key] = new[] { header.Value.ToString() };
-                    }
-                }
-
                 if (solution["cookies"] != null)
                 {
                     var cookies = new List<string>();
@@ -359,6 +357,7 @@ namespace Jackett.Common.Utils.Clients
                     result.Cookies = string.Join("; ", cookies);
                 }
 
+                // If FlareSolverr returns a UA, we capture it, but we don't send it in the request anymore.
                 if (solution["userAgent"] != null)
                 {
                     result.Headers["user-agent"] = new[] { solution["userAgent"].ToString() };
