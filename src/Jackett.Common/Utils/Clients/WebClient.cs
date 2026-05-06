@@ -269,32 +269,26 @@ namespace Jackett.Common.Utils.Clients
                 }
             }
 
-            if (webRequest.Headers != null && webRequest.Headers.Any())
+            if (webRequest.Headers != null && webRequest.Headers.TryGetValue("User-Agent", out var ua))
             {
-                var headers = new JObject();
-                foreach (var header in webRequest.Headers)
-                {
-                    // Exclude User-Agent so FlareSolverr uses its own internal Chrome UA
-                    if (!header.Key.Equals("User-Agent", StringComparison.OrdinalIgnoreCase))
-                    {
-                        headers[header.Key] = header.Value;
-                    }
-                }
-                fsRequest["headers"] = headers;
+                fsRequest["userAgent"] = ua;
             }
 
             if (!string.IsNullOrEmpty(webRequest.Cookies))
             {
-                if (fsRequest["headers"] == null)
-                    fsRequest["headers"] = new JObject();
-                fsRequest["headers"]["Cookie"] = webRequest.Cookies;
+                var cookieList = new JArray();
+                var cookieDictionary = CookieUtil.CookieHeaderToDictionary(webRequest.Cookies);
+                foreach (var kv in cookieDictionary)
+                {
+                    cookieList.Add(new JObject { { "name", kv.Key }, { "value", kv.Value } });
+                }
+                fsRequest["cookies"] = cookieList;
             }
 
             if (!string.IsNullOrEmpty(webRequest.Referer))
             {
-                if (fsRequest["headers"] == null)
-                    fsRequest["headers"] = new JObject();
-                fsRequest["headers"]["Referer"] = webRequest.Referer;
+                // Note: Referer is not directly supported as a top-level param in FlareSolverr v2/v3
+                // but we keep it here for future compatibility or internal use if needed.
             }
 
             // Add Proxy if configured
@@ -312,10 +306,38 @@ namespace Jackett.Common.Utils.Clients
             if (fsResponse["status"]?.ToString() == "ok")
             {
                 var solution = fsResponse["solution"];
+                var contentString = solution["response"]?.ToString();
+
+                // If it's an API request returning JSON/XML, FlareSolverr (the browser) often wraps it in HTML tags like <pre>.
+                // We need to extract the raw content if it looks like it's wrapped.
+                if (contentString != null && contentString.TrimStart().StartsWith("<"))
+                {
+                    // Check for <pre> tag which browsers use to wrap JSON
+                    var match = Regex.Match(contentString, @"<pre[^>]*>(.*)</pre>", RegexOptions.Singleline | RegexOptions.IgnoreCase);
+                    if (match.Success)
+                    {
+                        contentString = WebUtility.HtmlDecode(match.Groups[1].Value).Trim();
+                    }
+                    else
+                    {
+                        // Fallback: if it's just inside <body>
+                        match = Regex.Match(contentString, @"<body[^>]*>(.*)</body>", RegexOptions.Singleline | RegexOptions.IgnoreCase);
+                        if (match.Success)
+                        {
+                            var bodyContent = WebUtility.HtmlDecode(match.Groups[1].Value).Trim();
+                            // Only unwrap if the body doesn't look like actual HTML (no tags)
+                            if (!bodyContent.Contains("<") || !bodyContent.Contains(">"))
+                            {
+                                contentString = bodyContent;
+                            }
+                        }
+                    }
+                }
+
                 var result = new WebResult
                 {
                     Status = (HttpStatusCode)(int)solution["status"],
-                    ContentString = solution["response"]?.ToString(),
+                    ContentString = contentString,
                     Request = webRequest
                 };
 
@@ -335,6 +357,11 @@ namespace Jackett.Common.Utils.Clients
                         cookies.Add($"{cookie["name"]}={cookie["value"]}");
                     }
                     result.Cookies = string.Join("; ", cookies);
+                }
+
+                if (solution["userAgent"] != null)
+                {
+                    result.Headers["user-agent"] = new[] { solution["userAgent"].ToString() };
                 }
 
                 result.ContentBytes = result.Encoding.GetBytes(result.ContentString ?? "");
