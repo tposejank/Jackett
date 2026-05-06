@@ -306,17 +306,32 @@ namespace Jackett.Common.Utils.Clients
                 if (contentString != null && (contentString.TrimStart().StartsWith("<html", StringComparison.OrdinalIgnoreCase) || 
                                               contentString.TrimStart().StartsWith("<!DOCTYPE", StringComparison.OrdinalIgnoreCase)))
                 {
-                    // A browser wrapper for raw text (JSON) is extremely minimal (usually no divs or scripts).
-                    // If it contains these, it's likely a real HTML page we should not touch.
-                    bool isMinimalWrapper = !contentString.Contains("<div") && !contentString.Contains("<script");
+                    // A browser wrapper for raw text (JSON) is extremely minimal (usually no scripts).
+                    // We ignore the 'json-formatter-container' div which is often injected by browser JSON viewers.
+                    bool isMinimalWrapper = !contentString.Contains("<script") && 
+                                           (!contentString.Contains("<div") || contentString.Contains("json-formatter-container"));
 
                     if (isMinimalWrapper)
                     {
-                        // 1. Check for <pre> tag which browsers use to wrap JSON or raw text
-                        var match = Regex.Match(contentString, @"<pre[^>]*>(.*)</pre>", RegexOptions.Singleline | RegexOptions.IgnoreCase);
-                        if (match.Success)
+                        // 1. Check for <pre> tag (standard Chrome wrapper for raw text/JSON)
+                        var preMatch = Regex.Match(contentString, @"<pre[^>]*>(.*)</pre>", RegexOptions.Singleline | RegexOptions.IgnoreCase);
+                        if (preMatch.Success)
                         {
-                            contentString = WebUtility.HtmlDecode(match.Groups[1].Value).Trim();
+                            contentString = WebUtility.HtmlDecode(preMatch.Groups[1].Value).Trim();
+                        }
+                        else
+                        {
+                            // 2. Check for JSON directly inside <body> (common for SubsPlease and some text/plain responses)
+                            var bodyMatch = Regex.Match(contentString, @"<body[^>]*>(.*)</body>", RegexOptions.Singleline | RegexOptions.IgnoreCase);
+                            if (bodyMatch.Success)
+                            {
+                                var bodyContent = WebUtility.HtmlDecode(bodyMatch.Groups[1].Value).Trim();
+                                // If the body content itself looks like JSON, unwrap it
+                                if (bodyContent.StartsWith("{") || bodyContent.StartsWith("["))
+                                {
+                                    contentString = bodyContent;
+                                }
+                            }
                         }
                     }
 
@@ -333,6 +348,8 @@ namespace Jackett.Common.Utils.Clients
                         }
                     }
                 }
+
+                logger.Info("FlareSolverr response: " + contentString);
 
                 var result = new WebResult
                 {
