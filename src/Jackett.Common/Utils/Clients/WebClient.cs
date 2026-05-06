@@ -301,41 +301,35 @@ namespace Jackett.Common.Utils.Clients
             {
                 var solution = fsResponse["solution"];
                 var contentString = solution["response"]?.ToString();
-
-                // If it's an API request returning JSON/XML, FlareSolverr (the browser) often wraps it in HTML tags like <pre>.
-                // Since FlareSolverr doesn't return the original Content-Type header, we must guess and unwrap.
-                if (contentString != null && contentString.TrimStart().StartsWith("<"))
+                // If it's an API request returning JSON/XML, FlareSolverr (the browser) often wraps it in HTML tags.
+                // We only attempt to unwrap if the browser has wrapped the response in an HTML container.
+                if (contentString != null && (contentString.TrimStart().StartsWith("<html", StringComparison.OrdinalIgnoreCase) || 
+                                              contentString.TrimStart().StartsWith("<!DOCTYPE", StringComparison.OrdinalIgnoreCase)))
                 {
-                    // 1. Check for <pre> tag which browsers use to wrap JSON or raw text
-                    var match = Regex.Match(contentString, @"<pre[^>]*>(.*)</pre>", RegexOptions.Singleline | RegexOptions.IgnoreCase);
-                    if (match.Success)
+                    // A browser wrapper for raw text (JSON) is extremely minimal (usually no divs or scripts).
+                    // If it contains these, it's likely a real HTML page we should not touch.
+                    bool isMinimalWrapper = !contentString.Contains("<div") && !contentString.Contains("<script");
+
+                    if (isMinimalWrapper)
                     {
-                        contentString = WebUtility.HtmlDecode(match.Groups[1].Value).Trim();
+                        // 1. Check for <pre> tag which browsers use to wrap JSON or raw text
+                        var match = Regex.Match(contentString, @"<pre[^>]*>(.*)</pre>", RegexOptions.Singleline | RegexOptions.IgnoreCase);
+                        if (match.Success)
+                        {
+                            contentString = WebUtility.HtmlDecode(match.Groups[1].Value).Trim();
+                        }
                     }
+
                     // 2. Check for XML declaration if it's an XML response wrapped in HTML
-                    else if (contentString.Contains("<?xml"))
+                    if (contentString.Contains("<?xml"))
                     {
                         var xmlMatch = Regex.Match(contentString, @"(<\?xml.*)", RegexOptions.Singleline | RegexOptions.IgnoreCase);
                         if (xmlMatch.Success)
                         {
-                            contentString = xmlMatch.Groups[1].Value;
+                            var extractedXml = xmlMatch.Groups[1].Value;
                             // Strip any trailing HTML garbage the browser might have added
-                            var lastTag = contentString.LastIndexOf(">");
-                            if (lastTag > -1) contentString = contentString.Substring(0, lastTag + 1);
-                        }
-                    }
-                    else
-                    {
-                        // 3. Fallback: if it's just inside <body>
-                        match = Regex.Match(contentString, @"<body[^>]*>(.*)</body>", RegexOptions.Singleline | RegexOptions.IgnoreCase);
-                        if (match.Success)
-                        {
-                            var bodyContent = WebUtility.HtmlDecode(match.Groups[1].Value).Trim();
-                            // Only unwrap if the body doesn't look like actual HTML (no tags)
-                            if (!bodyContent.Contains("<") || !bodyContent.Contains(">"))
-                            {
-                                contentString = bodyContent;
-                            }
+                            var lastTag = extractedXml.LastIndexOf(">");
+                            if (lastTag > -1) contentString = extractedXml.Substring(0, lastTag + 1);
                         }
                     }
                 }
