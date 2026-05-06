@@ -12,6 +12,8 @@ using com.LandonKey.SocksWebProxy;
 using com.LandonKey.SocksWebProxy.Proxy;
 using Jackett.Common.Models.Config;
 using Jackett.Common.Services.Interfaces;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using NLog;
 
 namespace Jackett.Common.Utils.Clients
@@ -25,6 +27,7 @@ namespace Jackett.Common.Utils.Clients
         protected IConfigurationService configService;
         protected readonly ServerConfig serverConfig;
         protected IProcessService processService;
+        protected static readonly HttpClient FlareSolverrClient = new HttpClient();
         protected DateTime lastRequest = DateTime.MinValue;
         protected TimeSpan requestDelayTimeSpan;
         protected string ClientType;
@@ -167,6 +170,14 @@ namespace Jackett.Common.Utils.Clients
                 request.Headers.Add("Accept", "*/*");
             if (!hasAcceptLanguage)
                 request.Headers.Add("Accept-Language", "*");
+
+            // User-Agent
+            if (!request.Headers.ContainsKey("User-Agent"))
+            {
+                // Always use Chrome UA as default to be consistent and avoid detection
+                request.Headers.Add("User-Agent", BrowserUtil.ChromeUserAgent);
+            }
+
             return;
         }
 
@@ -185,7 +196,17 @@ namespace Jackett.Common.Utils.Clients
 
             PrepareRequest(request);
             await DelayRequest(request);
-            var result = await Run(request);
+
+            WebResult result;
+            if (!string.IsNullOrEmpty(serverConfig.FlareSolverrUrl))
+            {
+                result = await RunThroughFlareSolverr(request);
+            }
+            else
+            {
+                result = await Run(request);
+            }
+
             lastRequest = DateTime.Now;
             result.Request = request;
 
@@ -221,6 +242,110 @@ namespace Jackett.Common.Utils.Clients
         }
 
         protected virtual Task<WebResult> Run(WebRequest webRequest) => throw new NotImplementedException();
+
+        protected async Task<WebResult> RunThroughFlareSolverr(WebRequest webRequest)
+        {
+            var apiUrl = serverConfig.FlareSolverrUrl;
+            if (!apiUrl.EndsWith("/v1"))
+            {
+                apiUrl = apiUrl.TrimEnd('/') + "/v1";
+            }
+
+            var fsRequest = new JObject();
+            fsRequest["cmd"] = webRequest.Type == RequestType.POST ? "request.post" : "request.get";
+            fsRequest["url"] = webRequest.Url;
+            fsRequest["maxTimeout"] = serverConfig.FlareSolverrMaxTimeout;
+
+            if (webRequest.Type == RequestType.POST)
+            {
+                if (!string.IsNullOrEmpty(webRequest.RawBody))
+                {
+                    fsRequest["postData"] = webRequest.RawBody;
+                }
+                else if (webRequest.PostData != null && webRequest.PostData.Any())
+                {
+                    var postDataStr = string.Join("&", webRequest.PostData.Select(kv => $"{WebUtility.UrlEncode(kv.Key)}={WebUtility.UrlEncode(kv.Value)}"));
+                    fsRequest["postData"] = postDataStr;
+                }
+            }
+
+            if (webRequest.Headers != null && webRequest.Headers.Any())
+            {
+                var headers = new JObject();
+                foreach (var header in webRequest.Headers)
+                {
+                    // Exclude User-Agent so FlareSolverr uses its own internal Chrome UA
+                    if (!header.Key.Equals("User-Agent", StringComparison.OrdinalIgnoreCase))
+                    {
+                        headers[header.Key] = header.Value;
+                    }
+                }
+                fsRequest["headers"] = headers;
+            }
+
+            if (!string.IsNullOrEmpty(webRequest.Cookies))
+            {
+                if (fsRequest["headers"] == null)
+                    fsRequest["headers"] = new JObject();
+                fsRequest["headers"]["Cookie"] = webRequest.Cookies;
+            }
+
+            if (!string.IsNullOrEmpty(webRequest.Referer))
+            {
+                if (fsRequest["headers"] == null)
+                    fsRequest["headers"] = new JObject();
+                fsRequest["headers"]["Referer"] = webRequest.Referer;
+            }
+
+            // Add Proxy if configured
+            var proxyUrl = serverConfig.GetProxyUrl(false);
+            if (!string.IsNullOrEmpty(proxyUrl))
+            {
+                fsRequest["proxy"] = proxyUrl;
+            }
+
+            var content = new StringContent(fsRequest.ToString(), Encoding.UTF8, "application/json");
+            var response = await FlareSolverrClient.PostAsync(apiUrl, content);
+            var responseString = await response.Content.ReadAsStringAsync();
+            var fsResponse = JObject.Parse(responseString);
+
+            if (fsResponse["status"]?.ToString() == "ok")
+            {
+                var solution = fsResponse["solution"];
+                var result = new WebResult
+                {
+                    Status = (HttpStatusCode)(int)solution["status"],
+                    ContentString = solution["response"]?.ToString(),
+                    Request = webRequest
+                };
+
+                if (solution["headers"] != null)
+                {
+                    foreach (var header in (JObject)solution["headers"])
+                    {
+                        result.Headers[header.Key] = new[] { header.Value.ToString() };
+                    }
+                }
+
+                if (solution["cookies"] != null)
+                {
+                    var cookies = new List<string>();
+                    foreach (var cookie in (JArray)solution["cookies"])
+                    {
+                        cookies.Add($"{cookie["name"]}={cookie["value"]}");
+                    }
+                    result.Cookies = string.Join("; ", cookies);
+                }
+
+                result.ContentBytes = result.Encoding.GetBytes(result.ContentString ?? "");
+
+                return result;
+            }
+            else
+            {
+                throw new Exception("FlareSolverr error: " + fsResponse["message"]);
+            }
+        }
 
         public virtual void OnCompleted() => throw new NotImplementedException();
 

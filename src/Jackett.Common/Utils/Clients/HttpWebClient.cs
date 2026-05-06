@@ -8,7 +8,6 @@ using System.Net.Security;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Threading.Tasks;
-using FlareSolverrSharp;
 using Jackett.Common.Helpers;
 using Jackett.Common.Models.Config;
 using Jackett.Common.Services.Interfaces;
@@ -72,28 +71,20 @@ namespace Jackett.Common.Utils.Clients
                     cookies.Add(cookieUrl, new Cookie(kv.Key, kv.Value));
             }
 
-            using (var clearanceHandlr = new ClearanceHandler(serverConfig.FlareSolverrUrl))
+            using (var clientHandlr = new HttpClientHandler
             {
-                clearanceHandlr.MaxTimeout = serverConfig.FlareSolverrMaxTimeout;
-                clearanceHandlr.ProxyUrl = serverConfig.GetProxyUrl(false);
-                clearanceHandlr.ProxyUsername = serverConfig.ProxyUsername;
-                clearanceHandlr.ProxyPassword = serverConfig.ProxyPassword;
-
-                using (var clientHandlr = new HttpClientHandler
+                CookieContainer = cookies,
+                AllowAutoRedirect = false, // Do not use this - Bugs ahoy! Lost cookies and more.
+                UseCookies = true,
+                Proxy = webProxy,
+                UseProxy = webProxy != null,
+                AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate,
+                MaxConnectionsPerServer = 20,
+                ServerCertificateCustomValidationCallback = ValidateCertificate,
+            })
+            {
+                using (var client = new HttpClient(clientHandlr))
                 {
-                    CookieContainer = cookies,
-                    AllowAutoRedirect = false, // Do not use this - Bugs ahoy! Lost cookies and more.
-                    UseCookies = true,
-                    Proxy = webProxy,
-                    UseProxy = webProxy != null,
-                    AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate,
-                    MaxConnectionsPerServer = 20,
-                    ServerCertificateCustomValidationCallback = ValidateCertificate,
-                })
-                {
-                    clearanceHandlr.InnerHandler = clientHandlr;
-                    using (var client = new HttpClient(clearanceHandlr))
-                    {
                         client.Timeout = TimeSpan.FromSeconds(ClientTimeout);
                         using (var request = new HttpRequestMessage())
                         {
@@ -109,15 +100,6 @@ namespace Jackett.Common.Utils.Clients
                                         request.Headers.TryAddWithoutValidation(header.Key, header.Value);
                                     }
                                 }
-                            }
-
-                            // The User-Agent can be set by the indexer (in the headers)
-                            if (string.IsNullOrWhiteSpace(request.Headers.UserAgent.ToString()))
-                            {
-                                if (webRequest.EmulateBrowser == true)
-                                    request.Headers.UserAgent.ParseAdd(BrowserUtil.ChromeUserAgent);
-                                else
-                                    request.Headers.UserAgent.ParseAdd("Jackett/" + configService.GetVersion());
                             }
 
                             if (!string.IsNullOrEmpty(webRequest.Referer))
@@ -244,6 +226,5 @@ namespace Jackett.Common.Utils.Clients
                     }
                 }
             }
-        }
     }
 }

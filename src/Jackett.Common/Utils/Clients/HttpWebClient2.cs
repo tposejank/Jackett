@@ -8,7 +8,6 @@ using System.Net.Security;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Threading.Tasks;
-using FlareSolverrSharp;
 using Jackett.Common.Helpers;
 using Jackett.Common.Models.Config;
 using Jackett.Common.Services.Interfaces;
@@ -21,7 +20,6 @@ namespace Jackett.Common.Utils.Clients
     public class HttpWebClient2 : WebClient
     {
         private readonly CookieContainer cookies;
-        private ClearanceHandler clearanceHandlr;
         private HttpClientHandler clientHandlr;
         private HttpClient client;
 
@@ -62,13 +60,6 @@ namespace Jackett.Common.Utils.Clients
 
         public void CreateClient()
         {
-            clearanceHandlr = new ClearanceHandler(serverConfig.FlareSolverrUrl)
-            {
-                MaxTimeout = serverConfig.FlareSolverrMaxTimeout,
-                ProxyUrl = serverConfig.GetProxyUrl(false),
-                ProxyUsername = serverConfig.ProxyUsername,
-                ProxyPassword = serverConfig.ProxyPassword
-            };
             clientHandlr = new HttpClientHandler
             {
                 CookieContainer = cookies,
@@ -81,8 +72,7 @@ namespace Jackett.Common.Utils.Clients
                 ServerCertificateCustomValidationCallback = ValidateCertificate,
             };
 
-            clearanceHandlr.InnerHandler = clientHandlr;
-            client = new HttpClient(clearanceHandlr);
+            client = new HttpClient(clientHandlr);
 
             SetTimeout(ClientTimeout);
         }
@@ -132,15 +122,6 @@ namespace Jackett.Common.Utils.Clients
                         request.Headers.TryAddWithoutValidation(header.Key, header.Value);
                     }
                 }
-            }
-
-            // The User-Agent can be set by the indexer (in the headers)
-            if (string.IsNullOrWhiteSpace(request.Headers.UserAgent.ToString()))
-            {
-                if (webRequest.EmulateBrowser == true)
-                    request.Headers.UserAgent.ParseAdd(BrowserUtil.ChromeUserAgent);
-                else
-                    request.Headers.UserAgent.ParseAdd("Jackett/" + configService.GetVersion());
             }
 
             if (!string.IsNullOrEmpty(webRequest.Referer))
